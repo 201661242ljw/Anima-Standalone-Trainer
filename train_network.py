@@ -1730,7 +1730,20 @@ class NetworkTrainer:
                     skipped_dataloader = accelerator.skip_first_batches(train_dataloader, initial_step - 1)
                     initial_step = 1
                 batch_source = enumerate(skipped_dataloader or train_dataloader)
+            
+            
+            import numpy as np
+            ratio = np.random.uniform(0.5, 1.0)
+            if np.random.uniform() > 0.5:
+                ratio = 1 / ratio
+            ratio_square_root = ratio ** 0.5
+            target_h = int(1024 * ratio_square_root // 64 * 64)
+            target_w = int(1024 / ratio_square_root // 64 * 64)
+            dst_np_path = r'/workspace/wh.npy'
+            save_np = np.array([target_h, target_w])
+            np.save(dst_np_path, save_np)
 
+            
             for step, batch in batch_source:
                 current_step.value = global_step
                 if not phase_dataloaders and initial_step > 0:

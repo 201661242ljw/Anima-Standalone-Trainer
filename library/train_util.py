@@ -2974,7 +2974,7 @@ def load_image(image_path, alpha=False):
 
 
 # 画像を読み込む。戻り値はnumpy.ndarray,(original width, original height),(crop left, crop top, crop right, crop bottom)
-def trim_and_resize_if_required(
+def trim_and_resize_if_required_(
     random_crop: bool, image: np.ndarray, reso, resized_size: Tuple[int, int], resize_interpolation: Optional[str] = None
 ) -> Tuple[np.ndarray, Tuple[int, int], Tuple[int, int, int, int]]:
     image_height, image_width = image.shape[0:2]
@@ -3002,6 +3002,200 @@ def trim_and_resize_if_required(
     crop_ltrb = BucketManager.get_crop_ltrb(reso, original_size)
 
     assert image.shape[0] == reso[1] and image.shape[1] == reso[0], f"internal error, illegal trimmed size: {image.shape}, {reso}"
+    return image, original_size, crop_ltrb
+def trim_and_resize_if_required(
+        random_crop: bool,
+        image: np.ndarray,
+        reso,
+        resized_size: Tuple[int, int]
+) -> Tuple[np.ndarray, Tuple[int, int], Tuple[int, int, int, int]]:
+    image_height, image_width = image.shape[0:2]
+
+    original_size = (image_width, image_height)  # size before resize
+
+    crop_ltrb = BucketManager.get_crop_ltrb(reso, original_size)
+    if random_crop:
+        # import numpy as np
+        # ratio = np.random.uniform(0.5, 1.0)
+        # if np.random.uniform() > 0.5:
+        #     ratio = 1 / ratio
+        # ratio_square_root = ratio ** 0.5
+        # target_h = int(1024 * ratio_square_root // 64 * 64)
+        # target_w = int(1024 / ratio_square_root // 64 * 64)
+        if True:
+            target_size = np.load(r'/workspace/wh.npy')
+            target_h = int(target_size[0])
+            target_w = int(target_size[1])
+
+            # 四档概率
+            threshold_1 = 0.05  # 巨
+            threshold_2 = 0.20  # 中
+            threshold_3 = 0.45  # 小
+            # else -> 微
+
+            base = 0.9
+
+            rr = np.random.uniform()
+
+            # 先决定“尺寸档” + 对应旋转范围 + scale区间
+            if rr < threshold_1:
+                # 巨
+                theta_limit = 2.5
+                scale_band = 0
+            elif rr < threshold_2:
+                # 中
+                theta_limit = 5
+                scale_band = 1
+            elif rr < threshold_3:
+                # 小
+                theta_limit = 7.5
+                scale_band = 2
+            else:
+                # 微
+                theta_limit = 10
+                scale_band = 3
+
+            # 第二次随机：该档位内的具体角度
+            theta_deg = np.random.uniform(-theta_limit, theta_limit)
+            theta = theta_deg / 180.0 * np.pi
+
+            cos_t = abs(np.cos(theta))
+            sin_t = abs(np.sin(theta))
+
+            # 旋转后目标矩形的外接框尺寸
+            new_w = int(np.ceil(target_w * cos_t + target_h * sin_t))
+            new_h = int(np.ceil(target_h * cos_t + target_w * sin_t))
+
+            max_scale_factor = min(image_width / new_w, image_height / new_h) * 0.99
+            d = max_scale_factor - base
+
+            if max_scale_factor < base:
+                scale_factor = max_scale_factor
+            else:
+                # 根据尺寸档位选择 scale_factor 所属区间
+                if scale_band == 0:
+                    # 巨: 最大那一档
+                    low = max_scale_factor - 0.25 * d
+                    high = max_scale_factor
+                elif scale_band == 1:
+                    # 中
+                    low = max_scale_factor - 0.5 * d
+                    high = max_scale_factor - 0.25 * d
+                elif scale_band == 2:
+                    # 小
+                    low = max_scale_factor - 0.75 * d
+                    high = max_scale_factor - 0.5 * d
+                else:
+                    # 微
+                    low = base
+                    high = max_scale_factor - 0.75 * d
+
+                # 防止极端情况下 low > high
+                if high <= low:
+                    scale_factor = max_scale_factor
+                else:
+                    scale_factor = np.random.uniform(low, high)
+
+            # 外接框大小
+            out_w = max(1, int(new_w * scale_factor))
+            out_h = max(1, int(new_h * scale_factor))
+
+            # 内部真正目标框大小
+            crop_w = max(1, int(target_w * scale_factor))
+            crop_h = max(1, int(target_h * scale_factor))
+
+            x1 = 0 if image_width == out_w else np.random.randint(0, image_width - out_w + 1)
+            y1 = 0 if image_height == out_h else np.random.randint(0, image_height - out_h + 1)
+            x2 = x1 + out_w
+            y2 = y1 + out_h
+
+            # 先裁外接矩形
+            out_image = image[y1:y2, x1:x2]
+
+            # 围绕外接矩形中心旋转
+            patch_h, patch_w = out_image.shape[:2]
+            center = (patch_w / 2.0, patch_h / 2.0)
+            M = cv2.getRotationMatrix2D(center, theta_deg, 1.0)
+
+            rotated_patch = cv2.warpAffine(
+                out_image,
+                M,
+                (patch_w, patch_h),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_REPLICATE,
+            )
+
+            # 从旋转后的 patch 中心裁出内部矩形
+            cx = patch_w // 2
+            cy = patch_h // 2
+
+            inner_x1 = cx - crop_w // 2
+            inner_y1 = cy - crop_h // 2
+            inner_x2 = inner_x1 + crop_w
+            inner_y2 = inner_y1 + crop_h
+
+            crop_image = rotated_patch[inner_y1:inner_y2, inner_x1:inner_x2]
+
+            # 防止偶数/奇数取整导致 shape 差1
+            crop_image = crop_image[:crop_h, :crop_w]
+
+            # 最后 resize 到目标训练尺寸
+            image = pil_resize(crop_image, (target_w, target_h))
+
+        else:
+            max_scale_factor = min(image_width / target_w, image_height / target_h) * 0.95
+            base = 0.85
+            d = max_scale_factor - base
+            rr = np.random.uniform()
+
+            if max_scale_factor < base:
+                scale_factor = max_scale_factor
+            else:
+                if rr < threshold_1:
+                    scale_factor = np.random.uniform(max_scale_factor - 0.25 * d, max_scale_factor)
+                elif rr < threshold_2:
+                    scale_factor = np.random.uniform(max_scale_factor - 0.5 * d, max_scale_factor - 0.25 * d)
+                elif rr < threshold_3:
+                    scale_factor = np.random.uniform(max_scale_factor - 0.75 * d, max_scale_factor - 0.5 * d)
+                else:
+                    scale_factor = np.random.uniform(base, max_scale_factor - 0.75 * d)
+
+            crop_h = int(target_h * scale_factor)
+            crop_w = int(target_w * scale_factor)
+            crop_left = 0 if image_width == crop_w else np.random.randint(0, image_width - crop_w + 1)
+            crop_top = 0 if image_height == crop_h else np.random.randint(0, image_height - crop_h + 1)
+            crop_image = image[crop_top:crop_top + crop_h, crop_left:crop_left + crop_w]
+            image = pil_resize(crop_image, (target_w, target_h))
+        # print('img shape:', image.shape, target_h / target_w)
+
+
+    else:
+
+        if image_width != resized_size[0] or image_height != resized_size[1]:
+            # リサイズする
+            if image_width > resized_size[0] and image_height > resized_size[1]:
+                image = cv2.resize(image, resized_size, interpolation=cv2.INTER_AREA)  # INTER_AREAでやりたいのでcv2でリサイズ
+            else:
+                image = pil_resize(image, resized_size)
+
+        image_height, image_width = image.shape[0:2]
+
+        if image_width > reso[0]:
+            trim_size = image_width - reso[0]
+            p = trim_size // 2 if not random_crop else random.randint(0, trim_size)
+            # logger.info(f"w {trim_size} {p}")
+            image = image[:, p: p + reso[0]]
+        if image_height > reso[1]:
+            trim_size = image_height - reso[1]
+            p = trim_size // 2 if not random_crop else random.randint(0, trim_size)
+            # logger.info(f"h {trim_size} {p})
+            image = image[p: p + reso[1]]
+
+        # random cropの場合のcropされた値をどうcrop left/topに反映するべきか全くアイデアがない
+        # I have no idea how to reflect the cropped value in crop left/top in the case of random crop
+
+        assert image.shape[0] == reso[1] and image.shape[1] == reso[
+            0], f"internal error, illegal trimmed size: {image.shape}, {reso}"
     return image, original_size, crop_ltrb
 
 

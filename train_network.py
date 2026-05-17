@@ -1737,8 +1737,10 @@ class NetworkTrainer:
             if np.random.uniform() > 0.5:
                 ratio = 1 / ratio
             ratio_square_root = ratio ** 0.5
-            target_h = int(1024 * ratio_square_root // 64 * 64)
-            target_w = int(1024 / ratio_square_root // 64 * 64)
+            square_root = np.random.randint(1000, 1536)
+            target_h = int(square_root * ratio_square_root // 64 * 64)
+            target_w = int(square_root / ratio_square_root // 64 * 64)
+            print(fr"This Epoch Size:w {target_w:04d}    h {target_h:04d}")
             dst_np_path = r'/workspace/wh.npy'
             save_np = np.array([target_h, target_w])
             np.save(dst_np_path, save_np)
